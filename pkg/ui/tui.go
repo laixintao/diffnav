@@ -99,10 +99,11 @@ type mainModel struct {
 	commitBranch      string
 	cachedMeta        commitMeta
 	watchEnabled      bool
-	watchCmd          string
+	refreshCmd        string
 	watchInterval     time.Duration
 	pendingCursorPath string
-	watchInFlight     bool
+	refreshInFlight   bool
+	refreshError      string
 	repoRoot          string
 	styles            common.Styles
 }
@@ -134,9 +135,9 @@ func New(opts ModelOpts, cfg config.Config) mainModel {
 		config:            cfg,
 		iconStyle:         cfg.UI.Icons,
 		sideBySide:        cfg.UI.SideBySide,
-		watchEnabled:      cfg.Watch.Enabled,
-		watchCmd:          cfg.Watch.Cmd,
-		watchInterval:     cfg.Watch.Interval,
+		watchEnabled:      cfg.Refresh.Watch,
+		refreshCmd:        cfg.Refresh.Cmd,
+		watchInterval:     cfg.Refresh.Interval,
 		styles:            common.MakeStyles(),
 		lastTheme:         common.Themes.Current(),
 	}
@@ -206,8 +207,9 @@ func (m mainModel) fetchPRDiff() tea.Msg {
 
 type watchTickMsg struct{ time.Time }
 
-type watchResultMsg struct {
+type refreshResultMsg struct {
 	output string
+	parsed parsedDiffMsg
 	err    error
 }
 
@@ -230,9 +232,22 @@ func (m mainModel) scheduleWatchTick() tea.Cmd {
 	})
 }
 
-func (m mainModel) fetchWatchDiff() tea.Msg {
-	output, err := watch.RunCmd(m.watchCmd)
-	return watchResultMsg{output: output, err: err}
+func (m mainModel) fetchRefreshDiff() tea.Msg {
+	output, err := watch.RunCmd(m.refreshCmd)
+	result := refreshResultMsg{output: output, err: err}
+	if err == nil && output != m.diff {
+		result.parsed, result.err = parseDiffInput(output)
+	}
+	return result
+}
+
+func (m mainModel) refresh() (tea.Model, tea.Cmd) {
+	if m.refreshCmd == "" || m.refreshInFlight {
+		return m, nil
+	}
+	m.refreshInFlight = true
+	m.refreshError = ""
+	return m, m.fetchRefreshDiff
 }
 
 func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -249,10 +264,12 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var sCmds []tea.Cmd
 		m, sCmds = m.searchUpdate(msg)
 		cmds = append(cmds, sCmds...)
-		return m, tea.Batch(cmds...)
+		if _, isKey := msg.(tea.KeyPressMsg); isKey {
+			return m, tea.Batch(cmds...)
+		}
 	}
 
-	if m.diffViewer.Searching() {
+	if _, isKey := msg.(tea.KeyPressMsg); isKey && m.diffViewer.Searching() {
 		var sCmd tea.Cmd
 		m.diffViewer, sCmd = m.diffViewer.Update(msg)
 		cmds = append(cmds, sCmd)
@@ -321,6 +338,8 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		case key.Matches(msg, keys.Quit):
 			return m, tea.Quit
+		case key.Matches(msg, keys.Refresh):
+			return m.refresh()
 		case key.Matches(msg, keys.SearchFiles):
 			m.searchingFiles = true
 			m.filesSearch.SetWidth(m.searchWidth())
@@ -456,35 +475,34 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.parseDiff)
 
 	case watchTickMsg:
-		if m.watchInFlight {
+		if !m.watchEnabled {
 			return m, nil
 		}
-		m.watchInFlight = true
-		return m, m.fetchWatchDiff
+		updated, refreshCmd := m.refresh()
+		return updated, tea.Batch(m.scheduleWatchTick(), refreshCmd)
 
 	case repoRootMsg:
 		m.repoRoot = string(msg)
 
-	case watchResultMsg:
-		m.watchInFlight = false
+	case refreshResultMsg:
+		m.refreshInFlight = false
 		if msg.err != nil {
-			log.Warn("watch command failed", "err", msg.err)
-			cmds = append(cmds, m.scheduleWatchTick())
+			log.Warn("refresh failed", "err", msg.err)
+			m.refreshError = "refresh failed (r to retry)"
 			return m, tea.Batch(cmds...)
 		}
+		m.refreshError = ""
 		if msg.output == m.diff {
-			cmds = append(cmds, m.scheduleWatchTick())
 			return m, tea.Batch(cmds...)
 		}
 		m.pendingCursorPath = m.fileTree.CurrNodePath()
 		m.diffViewer.ClearCache()
 		m.diff = msg.output
-		cmds = append(cmds, m.parseDiff, m.scheduleWatchTick())
-		return m, tea.Batch(cmds...)
+		return m.Update(msg.parsed)
 
 	case parsedDiffMsg:
 		m.files = msg.files
-		if len(m.files) == 0 && !m.watchEnabled {
+		if len(m.files) == 0 && m.refreshCmd == "" {
 			return m, tea.Quit
 		}
 		m.fileTree = m.fileTree.SetFiles(m.files)
@@ -492,14 +510,18 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commitBranch = msg.branch
 		m.cachedMeta = m.parseCommitMeta()
 		m.diffViewer.SetPreamble(m.preamble)
-		m.diffViewer, cmd = m.diffViewer.SetDirPatch("/", m.fileTree.GetCurrNodeDesendantDiffs())
-		cmds = append(cmds, cmd)
+		m.diffViewer, cmd = m.diffViewer.SetDirPatch("/", m.files)
 		if m.pendingCursorPath != "" {
 			m.fileTree.SetCursorByPath(m.pendingCursorPath)
-			node := m.fileTree.GetCurrNode()
-			m, cmd = m.setNodeDiff(node)
-			cmds = append(cmds, cmd)
+			if m.fileTree.CurrNodePath() != "" {
+				m, cmd = m.setNodeDiff(m.fileTree.GetCurrNode())
+			}
 			m.pendingCursorPath = ""
+		}
+		cmds = append(cmds, cmd)
+		if m.searchingFiles {
+			m.setSearchResults()
+			m.resultsVp.SetContent(m.resultsView())
 		}
 
 	case common.ErrMsg:
@@ -725,15 +747,22 @@ type parsedDiffMsg struct {
 }
 
 func (m mainModel) parseDiff() tea.Msg {
-	// TODO: handle error
-	files, preamble, err := gitdiff.Parse(strings.NewReader(m.diff + "\n"))
+	parsed, err := parseDiffInput(m.diff)
 	if err != nil {
 		return common.ErrMsg{Err: err}
+	}
+	return parsed
+}
+
+func parseDiffInput(input string) (parsedDiffMsg, error) {
+	files, preamble, err := gitdiff.Parse(strings.NewReader(input + "\n"))
+	if err != nil {
+		return parsedDiffMsg{}, err
 	}
 	sortFiles(files)
 
 	branch := resolveBranch(preamble)
-	return parsedDiffMsg{files: files, preamble: preamble, branch: branch}
+	return parsedDiffMsg{files: files, preamble: preamble, branch: branch}, nil
 }
 
 // resolveBranch finds branches pointing at the preamble commit.
@@ -955,10 +984,19 @@ func (m mainModel) footerView() string {
 		usedWidth += lipgloss.Width(sep) + lipgloss.Width(selectingLabel)
 	}
 
-	if m.watchEnabled {
-		watchLabel := base.Foreground(lipgloss.Yellow).Render("watching: " + m.watchCmd)
-		parts = append(parts, sep, watchLabel)
-		usedWidth += lipgloss.Width(sep) + lipgloss.Width(watchLabel)
+	if m.refreshCmd != "" {
+		label := "r refresh: " + m.refreshCmd
+		if m.watchEnabled {
+			label = "watching (r refresh): " + m.refreshCmd
+		}
+		if m.refreshInFlight {
+			label = "refreshing: " + m.refreshCmd
+		} else if m.refreshError != "" {
+			label = m.refreshError
+		}
+		refreshLabel := base.Foreground(lipgloss.Yellow).Render(label)
+		parts = append(parts, sep, refreshLabel)
+		usedWidth += lipgloss.Width(sep) + lipgloss.Width(refreshLabel)
 	}
 
 	spacing := base.Render(strings.Repeat(" ", max(0, m.width-usedWidth)))

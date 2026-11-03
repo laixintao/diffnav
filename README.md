@@ -112,6 +112,8 @@ git config --global pager.diff diffnav
 | -------------------- | --------------------------------------------------------------------- |
 | `--side-by-side, -s` | Force side-by-side diff view                                          |
 | `--unified, -u`      | Force unified diff view                                               |
+| `--refresh, -r`      | Run `git diff` initially, then refresh manually by pressing `r`       |
+| `--refresh-cmd`      | Command to run initially and on `r` (implies `--refresh`)              |
 | `--watch, -w`        | Watch mode: periodically re-run a command and refresh                 |
 | `--watch-cmd`        | Command to run in watch mode (implies `--watch`, default: `git diff`) |
 | `--watch-interval`   | Interval between watch refreshes (default: `2s`)                      |
@@ -123,9 +125,28 @@ git diff | diffnav --unified
 git diff | diffnav -u
 ```
 
+### Manual Refresh
+
+Press `r` to re-run the configured diff command. Manual mode runs the command once at startup and refreshes only when requested:
+
+```sh
+# refresh unstaged changes with r
+diffnav --refresh
+
+# refresh staged changes or changes against HEAD
+diffnav --refresh-cmd "git diff --cached"
+diffnav --refresh-cmd "git diff HEAD"
+```
+
+The selected file is retained when it still exists. An empty diff keeps the viewer open, and a failed refresh keeps the previous diff with a retry hint in the footer. Repeated presses while a refresh is running are ignored. In search fields, `r` is entered as text.
+
+Piped input is a snapshot: `git diff | diffnav` cannot re-run its source command. Use one of the command modes above to enable refresh. Command modes ignore stdin and cannot be combined with `--pr`; manual and watch modes are mutually exclusive.
+
 ### Watch Mode
 
 Watch mode lets diffnav periodically re-run a diff command and refresh the display automatically. This is useful for monitoring changes as you work.
+
+Press `r` in watch mode to refresh immediately without changing the automatic refresh interval.
 
 ```sh
 # watch unstaged changes (default: git diff, every 2s)
@@ -231,6 +252,7 @@ ui:
 | <kbd>s</kbd>                | Toggle side-by-side/unified view |
 | <kbd>Tab</kbd>              | Switch focus between the panes   |
 | <kbd>T</kbd>                | Open the theme picker            |
+| <kbd>r</kbd>                | Refresh diff (manual/watch mode) |
 | <kbd>q</kbd>                | Quit                             |
 
 ## Discord
