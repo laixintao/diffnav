@@ -8,6 +8,28 @@ import (
 	"github.com/dlvhdr/diffnav/pkg/ui/common"
 )
 
+func TestStaleRenderCannotReplaceRefreshedDiff(t *testing.T) {
+	common.RegisterSupportedTints()
+	styles := common.MakeStyles()
+	m := New(false, &styles)
+	m.SetSize(100, 40)
+	key := cacheKey("/", false)
+	oldNode := &cachedNode{path: "/"}
+	newNode := &cachedNode{path: "/"}
+	m.cache[key] = newNode
+	m.dir = newNode
+	m, _ = m.Update(
+		diffContentMsg{cacheKey: key, node: newNode, lines: stringToDiffLines("fresh content")},
+	)
+	m, _ = m.Update(
+		diffContentMsg{cacheKey: key, node: oldNode, lines: stringToDiffLines("stale content")},
+	)
+	if got := m.View(); !strings.Contains(got, "fresh content") ||
+		strings.Contains(got, "stale content") {
+		t.Fatalf("stale render replaced the refreshed diff: %s", got)
+	}
+}
+
 func TestRenderPreamble_Empty(t *testing.T) {
 	common.RegisterSupportedTints()
 	m := New(false, &common.Styles{

@@ -24,15 +24,15 @@ type UIConfig struct {
 	Theme                 string `yaml:"theme"`                 // The theme to use (default: "tokyo_night")
 }
 
-type WatchConfig struct {
-	Enabled  bool
+type RefreshConfig struct {
 	Cmd      string
+	Watch    bool
 	Interval time.Duration
 }
 
 type Config struct {
-	UI    UIConfig    `yaml:"ui"`
-	Watch WatchConfig `yaml:"-"`
+	UI      UIConfig      `yaml:"ui"`
+	Refresh RefreshConfig `yaml:"-"`
 }
 
 func DefaultConfig() Config {

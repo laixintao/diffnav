@@ -213,10 +213,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	cmds := make([]tea.Cmd, 0)
 	switch msg := msg.(type) {
 	case diffContentMsg:
-		if _, ok := m.cache[msg.cacheKey]; ok {
-			m.cache[msg.cacheKey].diff = msg.lines
+		cached, ok := m.cache[msg.cacheKey]
+		if !ok || cached != msg.node {
+			return m, nil
 		}
-		m.fvp.SetObjects(msg.lines)
+		cached.diff = msg.lines
+		if m.file == cached || m.dir == cached {
+			m.fvp.SetObjects(msg.lines)
+		}
 	}
 
 	fvp, fvpCmd := m.fvp.Update(msg)
@@ -354,7 +358,7 @@ func (m Model) SetFilePatch(file *gitdiff.File) (Model, tea.Cmd) {
 	fname := filenode.GetFileName(file)
 	sideBySide := m.sideBySide && !file.IsNew && !file.IsDelete
 	key := cacheKey(fname, sideBySide)
-	if cached, ok := m.cache[key]; ok {
+	if cached, ok := m.cache[key]; ok && cached.diff != nil {
 		m.file = cached
 		m.updateHeader()
 		m.fvp.SetObjects(cached.diff)
@@ -380,7 +384,7 @@ func (m Model) SetDirPatch(dirPath string, files []*gitdiff.File) (Model, tea.Cm
 	m.file = nil
 
 	key := cacheKey(dirPath, m.sideBySide)
-	if cached, ok := m.cache[key]; ok {
+	if cached, ok := m.cache[key]; ok && cached.diff != nil {
 		m.dir = cached
 		m.updateHeader()
 		m.fvp.SetObjects(cached.diff)
@@ -471,7 +475,7 @@ func (m *Model) diffFile(node *cachedNode, width int) tea.Cmd {
 			return common.ErrMsg{Err: err}
 		}
 
-		return diffContentMsg{cacheKey: key, lines: stringToDiffLines(string(out))}
+		return diffContentMsg{cacheKey: key, node: node, lines: stringToDiffLines(string(out))}
 	}
 }
 
@@ -503,7 +507,7 @@ func (m *Model) diffDir(dir *cachedNode, width int, sideBySide bool, preamble st
 		if preamble != "" {
 			text = m.renderPreamble(preamble) + "\n" + text
 		}
-		return diffContentMsg{cacheKey: key, lines: stringToDiffLines(text)}
+		return diffContentMsg{cacheKey: key, node: dir, lines: stringToDiffLines(text)}
 	}
 }
 
@@ -541,6 +545,7 @@ func (m Model) renderPreamble(preamble string) string {
 
 type diffContentMsg struct {
 	cacheKey string
+	node     *cachedNode
 	lines    []diffLine
 }
 

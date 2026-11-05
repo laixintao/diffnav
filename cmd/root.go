@@ -54,6 +54,10 @@ git config --global pager.diff diffnav
 diffnav --watch
 diffnav --watch --watch-cmd "git diff HEAD" --watch-interval 5s
 
+# manual refresh: press r to re-run the diff command
+diffnav --refresh
+diffnav --refresh-cmd "git diff HEAD"
+
 # load a PR
 diffnav --pr https://github.com/dlvhdr/gh-dash/pull/447
 	`,
@@ -87,11 +91,12 @@ func init() {
 
 	rootCmd.Flags().BoolP("unified", "u", false, "Force unified diff view")
 
-	rootCmd.Flags().
-		BoolP("watch", "w", false, "Watch mode: periodically re-run a diff command and refresh")
-	rootCmd.Flags().String("watch-cmd", "git diff", "Command to run in watch mode")
-	rootCmd.Flags().Duration("watch-interval", 2*time.Second, "Interval between watch refreshes")
 	rootCmd.Flags().String("pr", "", "load a PR")
+	addRefreshFlags(rootCmd)
+	rootCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		_, err := refreshConfig(cmd)
+		return err
+	}
 
 	rootCmd.SetVersionTemplate("\n" + logo + "\n" + `{{printf "version %s\n" .Version}}`)
 
@@ -111,20 +116,9 @@ func init() {
 			log.Fatal("Cannot parse the help flag", err)
 		}
 
-		watchFlag, err := cmd.Flags().GetBool("watch")
+		refresh, err := refreshConfig(cmd)
 		if err != nil {
-			log.Fatal("Cannot parse the watch flag", err)
-		}
-		watchCmd, err := cmd.Flags().GetString("watch-cmd")
-		if err != nil {
-			log.Fatal("Cannot parse the watch-cmd flag", err)
-		}
-		watchInterval, err := cmd.Flags().GetDuration("watch-interval")
-		if err != nil {
-			log.Fatal("Cannot parse the watch-interval flag", err)
-		}
-		if cmd.Flags().Changed("watch-cmd") {
-			watchFlag = true
+			log.Fatal("Cannot configure refresh", err)
 		}
 		prURL, err := cmd.Flags().GetString("pr")
 		if err != nil {
@@ -169,14 +163,17 @@ func init() {
 		}
 
 		var input string
-		if watchFlag {
+		if refresh.Cmd != "" {
 			stat, sErr := os.Stdin.Stat()
 			if sErr == nil && stat.Mode()&os.ModeNamedPipe != 0 {
-				fmt.Fprintln(os.Stderr, "Warning: stdin input ignored in watch mode")
+				fmt.Fprintln(
+					os.Stderr,
+					"Warning: stdin input ignored when a diff command is configured",
+				)
 			}
-			output, wErr := watch.RunCmd(watchCmd)
+			output, wErr := watch.RunCmd(refresh.Cmd)
 			if wErr != nil {
-				log.Warn("initial watch command failed, starting with empty diff", "err", wErr)
+				log.Warn("initial diff command failed, starting with empty diff", "err", wErr)
 			}
 			input = output
 		} else if prURL == "" {
@@ -221,11 +218,7 @@ func init() {
 			cfg.UI.SideBySide = true
 		}
 
-		cfg.Watch = config.WatchConfig{
-			Enabled:  watchFlag,
-			Cmd:      watchCmd,
-			Interval: watchInterval,
-		}
+		cfg.Refresh = refresh
 
 		ttyIn, _, err := tea.OpenTTY()
 		if err != nil {
